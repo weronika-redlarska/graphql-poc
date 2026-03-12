@@ -13,19 +13,22 @@ const serverApolloClient = new ApolloClient<NormalizedCacheObject>({
     uri: SERVER_GRAPHQL_URI,
     useGETForQueries: true
   }),
-  cache: new InMemoryCache(),
+  cache: new InMemoryCache({ resultCaching: false }),
   defaultOptions: {
+    watchQuery: {
+      fetchPolicy: 'no-cache',
+      nextFetchPolicy: 'no-cache'
+    },
     query: {
-      fetchPolicy: 'cache-first'
+      fetchPolicy: 'no-cache'
+    },
+    mutate: {
+      fetchPolicy: 'no-cache'
     }
   }
 })
 
 export const getServerApolloClient = (): ApolloClient<NormalizedCacheObject> => {
-  if (debug) {
-    console.debug('[Apollo SSR] Reusing module-level server-side client')
-  }
-
   return serverApolloClient
 }
 

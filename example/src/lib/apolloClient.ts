@@ -42,16 +42,21 @@ const createApolloClient = (baseUrl?: string) => {
   const uri = baseUrl ? `${baseUrl}/api/graphql` : '/api/graphql'
 
   return new ApolloClient({
-    ssrMode: typeof window === 'undefined',
+    ssrMode: typeof globalThis.window === 'undefined',
     link: ApolloLink.from([loggingLink, new HttpLink({ uri, useGETForQueries: true })]),
-    cache: debug ? new DebugInMemoryCache() : new InMemoryCache(),
+    cache: debug
+      ? new DebugInMemoryCache({ resultCaching: false })
+      : new InMemoryCache({ resultCaching: false }),
     defaultOptions: {
       watchQuery: {
-        fetchPolicy: 'cache-first',
-        nextFetchPolicy: 'cache-first'
+        fetchPolicy: 'no-cache',
+        nextFetchPolicy: 'no-cache'
       },
       query: {
-        fetchPolicy: 'cache-first'
+        fetchPolicy: 'no-cache'
+      },
+      mutate: {
+        fetchPolicy: 'no-cache'
       }
     }
   })
@@ -70,13 +75,11 @@ export const initializeApollo = (
     _apolloClient.cache.restore(mergeDeep(existingCache, initialState))
   }
 
-  if (typeof window === 'undefined') {
+  if (typeof globalThis.window === 'undefined') {
     return _apolloClient
   }
 
-  if (!apolloClient) {
-    apolloClient = _apolloClient
-  }
+  apolloClient ??= _apolloClient
 
   return _apolloClient
 }
