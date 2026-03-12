@@ -16,7 +16,7 @@ interface QueryVisualizerProps {
   fromCache?: boolean
 }
 
-export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: QueryVisualizerProps) {
+export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Readonly<QueryVisualizerProps>) {
   const [expanded, setExpanded] = useState(true)
 
   const getStatusColor = (status: QueryNodeStatus): string => {
@@ -46,6 +46,18 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
     const color = getStatusColor(node.status)
     const icon = getStatusIcon(node.status)
     const isAnimated = node.status === 'loading'
+    let backgroundColor = 'transparent'
+    if (node.status === 'loading') {
+      backgroundColor = '#fff3e0'
+    } else if (node.status === 'cached') {
+      backgroundColor = '#e8f5e9'
+    } else if (node.status === 'loaded') {
+      backgroundColor = '#e8f1fb'
+    } else if (node.status === 'error') {
+      backgroundColor = '#fdecea'
+    }
+    const emphasis = node.status === 'pending' ? 0.6 : 1
+    const boxShadow = node.status === 'pending' ? 'none' : '0 1px 3px rgba(0,0,0,0.08)'
 
     return (
       <div key={node.id}>
@@ -54,13 +66,14 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
             marginLeft: `${indent}px`,
             padding: '8px 12px',
             marginBottom: '4px',
-            backgroundColor: node.status === 'loading' ? '#fff3e0' : node.status === 'cached' ? '#e8f5e9' : 'transparent',
+            backgroundColor,
             borderLeft: `4px solid ${color}`,
             transition: 'all 0.3s ease',
             fontFamily: 'monospace',
             fontSize: '13px',
             borderRadius: '0 4px 4px 0',
-            boxShadow: node.status === 'loading' || node.status === 'cached' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
+            boxShadow,
+            opacity: emphasis
           }}
         >
           <span
@@ -76,9 +89,9 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
           </span>
           <span style={{ color: '#212b32', fontWeight: depth === 0 ? 600 : 400 }}>{node.label}</span>
           {node.status === 'cached' && (
-            <span style={{ 
-              marginLeft: '10px', 
-              color: '#4caf50', 
+            <span style={{
+              marginLeft: '10px',
+              color: '#4caf50',
               fontSize: '11px',
               backgroundColor: '#c8e6c9',
               padding: '2px 6px',
@@ -89,9 +102,9 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
             </span>
           )}
           {node.status === 'loading' && (
-            <span style={{ 
-              marginLeft: '10px', 
-              color: '#ff9800', 
+            <span style={{
+              marginLeft: '10px',
+              color: '#ff9800',
               fontSize: '11px',
               backgroundColor: '#ffe0b2',
               padding: '2px 6px',
@@ -101,8 +114,21 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
               LOADING
             </span>
           )}
+          {node.status === 'loaded' && (
+            <span style={{
+              marginLeft: '10px',
+              color: '#005eb8',
+              fontSize: '11px',
+              backgroundColor: '#d6e8f8',
+              padding: '2px 6px',
+              borderRadius: '3px',
+              fontWeight: 600
+            }}>
+              RETURNED
+            </span>
+          )}
         </div>
-        {node.children && node.children.map(child => renderNode(child, depth + 1))}
+        {node.children?.map((child) => renderNode(child, depth + 1))}
       </div>
     )
   }
@@ -120,7 +146,8 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
         top: '20px'
       }}
     >
-      <div
+      <button
+        type="button"
         style={{
           display: 'flex',
           justifyContent: 'space-between',
@@ -128,7 +155,10 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
           padding: '16px',
           backgroundColor: '#005eb8',
           color: 'white',
-          cursor: 'pointer'
+          cursor: 'pointer',
+          width: '100%',
+          border: 'none',
+          textAlign: 'left'
         }}
         onClick={() => setExpanded(!expanded)}
       >
@@ -136,10 +166,15 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
           <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>
             📊 {queryName}
           </h3>
+          {isLoading && (
+            <div style={{ marginTop: '6px', fontSize: '12px', opacity: 0.95 }}>
+              Fetch in progress
+            </div>
+          )}
           {fromCache && (
-            <div style={{ 
-              marginTop: '6px', 
-              fontSize: '12px', 
+            <div style={{
+              marginTop: '6px',
+              fontSize: '12px',
               backgroundColor: '#4caf50',
               display: 'inline-block',
               padding: '3px 8px',
@@ -150,19 +185,16 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
             </div>
           )}
         </div>
-        <button
+        <span
           style={{
-            background: 'none',
-            border: 'none',
             fontSize: '20px',
-            cursor: 'pointer',
             color: 'white',
             padding: '4px 8px'
           }}
         >
           {expanded ? '▼' : '▶'}
-        </button>
-      </div>
+        </span>
+      </button>
       {expanded && (
         <div
           style={{
@@ -173,11 +205,11 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
           }}
         >
           {tree.map(node => renderNode(node, 0))}
-          
+
           {/* Legend */}
-          <div style={{ 
-            marginTop: '20px', 
-            paddingTop: '16px', 
+          <div style={{
+            marginTop: '20px',
+            paddingTop: '16px',
             borderTop: '2px solid #e0e0e0',
             display: 'flex',
             gap: '16px',
@@ -190,11 +222,15 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Query
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span style={{ fontSize: '16px' }}>✓</span>
-              <span style={{ fontWeight: 600 }}>Fresh</span>
+              <span style={{ fontWeight: 600 }}>Returned</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span style={{ fontSize: '16px' }}>🔄</span>
               <span style={{ fontWeight: 600 }}>Loading</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '16px' }}>⏳</span>
+              <span style={{ fontWeight: 600 }}>Not fetched yet</span>
             </div>
           </div>
         </div>

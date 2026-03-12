@@ -138,13 +138,65 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
     })
   }, [])
 
-  // Build unified query tree visualization including all progressive loads
+  // Render the full patient graph and progressively highlight fields as more of it is fetched.
   const queryTree = useMemo(() => {
     let patientStatus: QueryNode['status'] = 'pending'
     if (loading) {
       patientStatus = 'loading'
     } else if (patient) {
       patientStatus = 'loaded'
+    }
+
+    const getDocumentCollectionStatus = (documentState?: DocumentsState): QueryNode['status'] => {
+      if (documentState?.showDocuments !== true) {
+        return 'loaded'
+      }
+
+      if (documentState.loading) {
+        return 'loading'
+      }
+
+      if (documentState.error) {
+        return 'error'
+      }
+
+      return 'loaded'
+    }
+
+    const getDocumentMetadataStatus = (documentState?: DocumentsState): QueryNode['status'] => {
+      if (documentState?.showDocuments !== true) {
+        return 'pending'
+      }
+
+      if (documentState.loading) {
+        return 'loading'
+      }
+
+      if (documentState.error) {
+        return 'error'
+      }
+
+      return 'loaded'
+    }
+
+    const getMetadataLabel = (
+      fieldName: string,
+      fallbackType: string,
+      value?: string | number | null
+    ): string => {
+      if (value === undefined) {
+        return `${fieldName}: ${fallbackType}`
+      }
+
+      if (value === null) {
+        return `${fieldName}: null`
+      }
+
+      if (typeof value === 'number') {
+        return `${fieldName}: ${value}`
+      }
+
+      return `${fieldName}: "${value}"`
     }
 
     const patientNode: QueryNode = {
@@ -181,57 +233,74 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
           id: 'referrals',
           label: `referrals: [Referral!]! (${patient?.referrals?.length || 0} items)`,
           status: patient ? 'loaded' : 'pending',
-          children: patient?.referrals?.map((referral) => ({
-            id: `referral-${referral.id}`,
-            label: `Referral { title: "${referral.title}" }`,
-            status: 'loaded' as const,
-            children: [
-              { id: `${referral.id}-status`, label: `status: "${referral.status}"`, status: 'loaded' as const },
-              { id: `${referral.id}-docs`, label: `documents: [Document!]! (${referral.documentCount} items)`, status: 'loaded' as const }
+          children: patient?.referrals?.map((referral) => {
+            const documentState = documentStates.get(referral.id)
+            const detailDocuments = documentState?.data?.referralDocuments ?? []
+            const detailDocumentsById = new Map(detailDocuments.map((document) => [document.id, document]))
+            const summaryDocumentIds = new Set(referral.documents.map((document) => document.id))
+            const mergedDocuments = [
+              ...referral.documents.map((document) => detailDocumentsById.get(document.id) ?? document),
+              ...detailDocuments.filter((document) => !summaryDocumentIds.has(document.id))
             ]
-          }))
+            const documentsStatus = getDocumentCollectionStatus(documentState)
+
+            return {
+              id: `referral-${referral.id}`,
+              label: `Referral { title: "${referral.title}" }`,
+              status: 'loaded' as const,
+              children: [
+                { id: `${referral.id}-id`, label: `id: "${referral.id}"`, status: 'loaded' as const },
+                { id: `${referral.id}-title`, label: `title: "${referral.title}"`, status: 'loaded' as const },
+                { id: `${referral.id}-status`, label: `status: "${referral.status}"`, status: 'loaded' as const },
+                { id: `${referral.id}-receivedAt`, label: `receivedAt: "${referral.receivedAt}"`, status: 'loaded' as const },
+                {
+                  id: `${referral.id}-docs`,
+                  label: `documents: [Document!]! (${referral.documentCount} items)`,
+                  status: documentsStatus,
+                  children: mergedDocuments.map((document) => {
+                    const detailedDocument = detailDocumentsById.get(document.id)
+                    const metadataStatus = getDocumentMetadataStatus(documentState)
+                    const documentStatus = documentState?.showDocuments === true ? documentsStatus : 'loaded'
+
+                    return {
+                      id: `${referral.id}-document-${document.id}`,
+                      label: `Document { id: "${document.id}" }`,
+                      status: documentStatus,
+                      children: [
+                        { id: `${document.id}-id`, label: `id: "${document.id}"`, status: 'loaded' as const },
+                        { id: `${document.id}-title`, label: `title: "${document.title}"`, status: 'loaded' as const },
+                        {
+                          id: `${document.id}-type`,
+                          label: getMetadataLabel('type', 'String', detailedDocument?.type ?? (detailedDocument ? 'Unknown' : undefined)),
+                          status: metadataStatus
+                        },
+                        {
+                          id: `${document.id}-size`,
+                          label: getMetadataLabel('sizeKb', 'Int', detailedDocument?.sizeKb),
+                          status: metadataStatus
+                        },
+                        {
+                          id: `${document.id}-created`,
+                          label: getMetadataLabel('createdAt', 'String', detailedDocument?.createdAt ?? (detailedDocument ? 'Unknown' : undefined)),
+                          status: metadataStatus
+                        },
+                        {
+                          id: `${document.id}-uploader`,
+                          label: getMetadataLabel('uploadedBy', 'String', detailedDocument?.uploadedBy ?? (detailedDocument ? 'Unknown' : undefined)),
+                          status: metadataStatus
+                        }
+                      ]
+                    }
+                  })
+                }
+              ]
+            }
+          })
         }
       ]
     }
 
-    // Add document query nodes for referrals that have loaded documents
-    const documentQueryNodes: QueryNode[] = []
-    documentStates.forEach((state, referralId) => {
-      if (state.showDocuments) {
-        const referral = patient?.referrals.find(r => r.id === referralId)
-        if (referral) {
-          let documentStatus: QueryNode['status'] = 'pending'
-          if (state.loading) {
-            documentStatus = 'loading'
-          } else if (state.error) {
-            documentStatus = 'error'
-          } else if (state.data) {
-            documentStatus = 'loaded'
-          }
-
-          const documentNode: QueryNode = {
-            id: `referralDocuments-${referralId}`,
-            label: `referralDocuments(patientId: "${id.slice(0, 8)}...", referralId: "${referralId.slice(0, 8)}...")`,
-            status: documentStatus,
-            children: state.data?.referralDocuments.map((doc) => ({
-              id: `doc-${doc.id}`,
-              label: `Document { title: "${doc.title}" }`,
-              status: 'loaded' as const,
-              children: [
-                { id: `${doc.id}-title`, label: `title: "${doc.title}"`, status: 'loaded' as const },
-                { id: `${doc.id}-type`, label: `type: "${doc.type ?? 'Unknown'}"`, status: doc.type ? 'loaded' as const : 'pending' },
-                { id: `${doc.id}-size`, label: `sizeKb: ${doc.sizeKb ?? 'null'}`, status: doc.sizeKb ? 'loaded' as const : 'pending' },
-                { id: `${doc.id}-created`, label: `createdAt: "${doc.createdAt ?? 'Unknown'}"`, status: doc.createdAt ? 'loaded' as const : 'pending' },
-                { id: `${doc.id}-uploader`, label: `uploadedBy: "${doc.uploadedBy ?? 'Unknown'}"`, status: doc.uploadedBy ? 'loaded' as const : 'pending' }
-              ]
-            })) ?? []
-          }
-          documentQueryNodes.push(documentNode)
-        }
-      }
-    })
-
-    return [patientNode, ...documentQueryNodes]
+    return [patientNode]
   }, [patient, loading, coreComplete, patientName, id, documentStates])
 
   return (
@@ -301,7 +370,7 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
 
           <div>
             <QueryVisualizer
-              queryName="GraphQL Queries"
+              queryName="Patient Graph"
               tree={queryTree}
               isLoading={loading || Array.from(documentStates.values()).some(state => state.loading)}
               fromCache={coreComplete && !loading}
