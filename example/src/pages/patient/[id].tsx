@@ -1,10 +1,21 @@
 import Head from 'next/head'
 import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
-import { gql, useLazyQuery, useQuery } from '@apollo/client'
+import { gql, useLazyQuery, useQuery, useFragment } from '@apollo/client'
 import { useEffect, useState } from 'react'
 import { initializeApollo } from '../../lib/apolloClient'
+import { getServerApolloClient } from '../../lib/serverApolloClient'
 import { getBaseUrl } from '../../lib/getBaseUrl'
+
+// Shared fragment — the list page writes Patient:id { id, name } into the
+// normalised entity cache. useFragment reads from there directly, so the
+// patient name is available before PATIENT_DETAIL_QUERY resolves.
+const PATIENT_CORE_FRAGMENT = gql`
+  fragment PatientCore on Patient {
+    id
+    name
+  }
+`
 
 const PATIENT_DETAIL_QUERY = gql`
   query PatientDetail($id: ID!) {
@@ -77,8 +88,19 @@ type PageProps = {
 }
 
 export default function PatientDetailPage({ id }: PageProps) {
+  // Read the name we already have from the list-page entity cache immediately,
+  // before PATIENT_DETAIL_QUERY has a chance to resolve.
+  const { data: coreData, complete: coreComplete } = useFragment<{ id: string; name: string }>({
+    fragment: PATIENT_CORE_FRAGMENT,
+    from: { __typename: 'Patient', id }
+  })
+
+  // cache-first: SSR already fetched fresh data into initialApolloState, so the
+  // client should trust the cache. cache-and-network would fire a redundant
+  // background network call on every page load after SSR.
   const { data, loading } = useQuery<{ patient: PatientDetail | null }>(PATIENT_DETAIL_QUERY, {
-    variables: { id }
+    variables: { id },
+    fetchPolicy: 'cache-first'
   })
   const [expandedReferralId, setExpandedReferralId] = useState<string | null>(null)
   const [documentCache, setDocumentCache] = useState<Record<string, DocumentMeta[]>>({})
@@ -87,6 +109,9 @@ export default function PatientDetailPage({ id }: PageProps) {
   }>(REFERRAL_DOCUMENTS_QUERY)
 
   const patient = data?.patient
+  // Fall back to the fragment name so the heading renders on first navigation
+  // even while the full query is still in flight.
+  const patientName = patient?.name ?? (coreComplete ? coreData.name : undefined)
 
   useEffect(() => {
     if (expandedReferralId && documentsData?.referralDocuments) {
@@ -128,12 +153,15 @@ export default function PatientDetailPage({ id }: PageProps) {
           <p className="nhsuk-body">This view requests additional attributes to enrich the graph on navigation.</p>
         </header>
 
-        {loading && <p className="nhsuk-body">Loading patient detail…</p>}
+        {loading && !patientName && <p className="nhsuk-body">Loading patient detail…</p>}
         {!loading && !patient && <p className="nhsuk-body">Patient not found.</p>}
 
-        {patient && (
+        {(patient || patientName) && (
           <section className="nhsuk-u-margin-bottom-6">
-            <h2 className="nhsuk-heading-m">{patient.name}</h2>
+            {/* patientName comes from the fragment cache immediately on client navigation */}
+            <h2 className="nhsuk-heading-m">{patientName}</h2>
+            {/* Demographics and referrals are only available once the full query resolves */}
+            {patient && (<>
             <dl className="nhsuk-summary-list">
               <div className="nhsuk-summary-list__row">
                 <dt className="nhsuk-summary-list__key">NHS number</dt>
@@ -202,6 +230,7 @@ export default function PatientDetailPage({ id }: PageProps) {
                 )
               })}
             </ul>
+            </>)}
           </section>
         )}
       </main>
@@ -211,9 +240,10 @@ export default function PatientDetailPage({ id }: PageProps) {
 
 export const getServerSideProps: GetServerSideProps<PageProps> = async ({ req, params }) => {
   const id = params?.id as string
-  const apolloClient = initializeApollo(null, getBaseUrl(req))
+  // Use persistent server-side Apollo client that shares cache across SSR requests
+  const serverClient = getServerApolloClient(getBaseUrl(req))
 
-  await apolloClient.query({
+  await serverClient.query({
     query: PATIENT_DETAIL_QUERY,
     variables: { id }
   })
@@ -221,7 +251,7 @@ export const getServerSideProps: GetServerSideProps<PageProps> = async ({ req, p
   return {
     props: {
       id,
-      initialApolloState: apolloClient.cache.extract()
+      initialApolloState: serverClient.cache.extract()
     }
   }
 }

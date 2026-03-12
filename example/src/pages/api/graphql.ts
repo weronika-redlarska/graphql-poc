@@ -1,5 +1,7 @@
-import { ApolloServer, gql } from 'apollo-server-micro'
-import type { NextApiRequest, NextApiResponse } from 'next'
+import { ApolloServer } from '@apollo/server'
+import { startServerAndCreateNextHandler } from '@as-integrations/next'
+import type { NextApiRequest } from 'next'
+import { gql } from 'graphql-tag'
 import { getBaseUrl } from '../../lib/getBaseUrl'
 
 const typeDefs = gql`
@@ -237,19 +239,16 @@ const resolvers = {
   }
 }
 
-const apolloServer = new ApolloServer({
+type Context = { baseUrl: string }
+
+const server = new ApolloServer<Context>({
   typeDefs,
   resolvers,
-  context: ({ req }: { req: NextApiRequest }) => ({ baseUrl: getBaseUrl(req) })
 })
 
-const startServer = apolloServer.start()
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  await startServer
-  const apolloHandler = apolloServer.createHandler({ path: '/api/graphql' })
-  return apolloHandler(req, res)
-}
+export default startServerAndCreateNextHandler<NextApiRequest, Context>(server, {
+  context: async (req) => ({ baseUrl: getBaseUrl(req) })
+})
 
 export const config = {
   api: {

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
 import { gql, useQuery } from '@apollo/client'
 import { initializeApollo } from '../lib/apolloClient'
+import { getServerApolloClient } from '../lib/serverApolloClient'
 import { getBaseUrl } from '../lib/getBaseUrl'
 
 const PATIENTS_QUERY = gql`
@@ -56,15 +57,16 @@ export default function Home() {
 }
 
 export const getServerSideProps: GetServerSideProps = async ({ req }) => {
-  const apolloClient = initializeApollo(null, getBaseUrl(req))
+  // Use persistent server-side Apollo client that shares cache across SSR requests
+  const serverClient = getServerApolloClient(getBaseUrl(req))
 
-  await apolloClient.query({
+  await serverClient.query({
     query: PATIENTS_QUERY
   })
 
   return {
     props: {
-      initialApolloState: apolloClient.cache.extract()
+      initialApolloState: serverClient.cache.extract()
     }
   }
 }

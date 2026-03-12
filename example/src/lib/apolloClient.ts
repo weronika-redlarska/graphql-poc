@@ -1,5 +1,40 @@
-import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject } from '@apollo/client'
+import { ApolloClient, ApolloLink, Cache, HttpLink, InMemoryCache, NormalizedCacheObject, Operation, NextLink } from '@apollo/client'
+import { getOperationName, mergeDeep } from '@apollo/client/utilities'
 import { useMemo } from 'react'
+
+const debug = process.env.NODE_ENV === 'development'
+
+// Extends InMemoryCache to log every cache read.
+// Apollo calls diff() before deciding whether to go to the network, so
+// a HIT here means the response will be served from cache (no network log follows).
+// A MISS means the loggingLink below will fire next.
+class DebugInMemoryCache extends InMemoryCache {
+  override diff<T>(options: Cache.DiffOptions): Cache.DiffResult<T> {
+    const result = super.diff<T>(options)
+    if (options.query) {
+      const opName = getOperationName(options.query) ?? 'anonymous'
+      console.debug(`[Apollo Cache] ${result.complete ? '✔ HIT ' : '◌ MISS'} ${opName}`)
+    }
+    return result
+  }
+}
+
+// Only fires when a request actually reaches the network (cache miss path).
+const loggingLink = new ApolloLink((operation: Operation, forward: NextLink) => {
+  if (debug) {
+    console.debug(`[Apollo Network] ▶ ${operation.operationName}`, operation.variables)
+  }
+  return forward(operation).map((result) => {
+    if (debug) {
+      if (result.errors) {
+        console.error(`[Apollo Network] ✖ ${operation.operationName}`, result.errors)
+      } else {
+        console.debug(`[Apollo Network] ✔ ${operation.operationName}`, result.data)
+      }
+    }
+    return result
+  })
+})
 
 let apolloClient: ApolloClient<NormalizedCacheObject> | undefined
 
@@ -8,11 +43,8 @@ const createApolloClient = (baseUrl?: string) => {
 
   return new ApolloClient({
     ssrMode: typeof window === 'undefined',
-    link: new HttpLink({
-      uri,
-      useGETForQueries: true
-    }),
-    cache: new InMemoryCache(),
+    link: ApolloLink.from([loggingLink, new HttpLink({ uri, useGETForQueries: true })]),
+    cache: debug ? new DebugInMemoryCache() : new InMemoryCache(),
     defaultOptions: {
       watchQuery: {
         fetchPolicy: 'cache-first',
@@ -33,10 +65,9 @@ export const initializeApollo = (
 
   if (initialState) {
     const existingCache = _apolloClient.cache.extract()
-    _apolloClient.cache.restore({
-      ...existingCache,
-      ...initialState
-    })
+    // mergeDeep is required — a shallow spread overwrites ROOT_QUERY entirely,
+    // discarding all query results from the previous page.
+    _apolloClient.cache.restore(mergeDeep(existingCache, initialState))
   }
 
   if (typeof window === 'undefined') {
