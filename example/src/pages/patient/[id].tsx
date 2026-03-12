@@ -1,12 +1,78 @@
 import Head from 'next/head'
-import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
+import { useQuery, NormalizedCacheObject } from '@apollo/client'
+import Link from 'next/link'
+import { useState } from 'react'
 import { getServerApolloClient } from '../../lib/serverApolloClient'
-import { PATIENT_DETAIL_QUERY, PatientDetail } from '../../lib/patientQueries'
+import {
+  PATIENT_DETAIL_QUERY,
+  PatientDetail,
+  REFERRAL_DOCUMENTS_QUERY,
+  DocumentMeta,
+  ReferralSummary
+} from '../../lib/patientQueries'
 
 type PageProps = Readonly<{
   patient: PatientDetail | null
+  initialApolloState: NormalizedCacheObject
 }>
+
+type ReferralDocumentsData = {
+  referralDocuments: DocumentMeta[]
+}
+
+function ReferralDocumentsSection({ patientId, referral }: Readonly<{ patientId: string; referral: ReferralSummary }>) {
+  const [showDocuments, setShowDocuments] = useState(false)
+  const { data, loading, error } = useQuery<ReferralDocumentsData>(REFERRAL_DOCUMENTS_QUERY, {
+    variables: { patientId, referralId: referral.id },
+    skip: !showDocuments
+  })
+  const documentList = data?.referralDocuments ?? referral.documents
+
+  return (
+    <section className="nhsuk-u-margin-top-4">
+      <ul className="nhsuk-list nhsuk-list--bullet">
+        {documentList.map((document) => (
+          <li key={document.id}>{document.title}</li>
+        ))}
+      </ul>
+
+      {!showDocuments && (
+        <button
+          type="button"
+          className="nhsuk-button nhsuk-button--secondary nhsuk-u-margin-bottom-0"
+          onClick={() => setShowDocuments(true)}
+        >
+          Load document metadata
+        </button>
+      )}
+
+      {showDocuments && loading && <p className="nhsuk-body nhsuk-u-margin-top-3">Loading document metadata...</p>}
+      {showDocuments && error && (
+        <p className="nhsuk-body nhsuk-u-margin-top-3">Unable to load document metadata.</p>
+      )}
+      {showDocuments && !loading && !error && data?.referralDocuments.length === 0 && (
+        <p className="nhsuk-body nhsuk-u-margin-top-3">No document metadata found.</p>
+      )}
+
+      {showDocuments && !loading && !error && (data?.referralDocuments.length ?? 0) > 0 && (
+        <ul className="nhsuk-list nhsuk-list--border nhsuk-u-margin-top-3">
+          {data?.referralDocuments.map((document) => (
+            <li key={document.id}>
+              <strong>{document.title}</strong>
+              <div className="nhsuk-hint">Type: {document.type ?? 'Unknown'}</div>
+              <div className="nhsuk-hint">
+                Size: {document.sizeKb ? `${document.sizeKb} KB` : 'Unknown'}
+              </div>
+              <div className="nhsuk-hint">Created: {document.createdAt ?? 'Unknown'}</div>
+              <div className="nhsuk-hint">Uploaded by: {document.uploadedBy ?? 'Unknown'}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
 
 export default function PatientDetailPage({ patient }: PageProps) {
   return (
@@ -56,17 +122,7 @@ export default function PatientDetailPage({ patient }: PageProps) {
                   <div className="nhsuk-hint">Status: {referral.status}</div>
                   <div className="nhsuk-hint">Received: {referral.receivedAt}</div>
                   <div className="nhsuk-body">Documents: {referral.documentCount}</div>
-                  <ul className="nhsuk-list nhsuk-list--bullet">
-                    {referral.documents.map((document) => (
-                      <li key={document.id}>{document.title}</li>
-                    ))}
-                  </ul>
-                  <Link
-                    className="nhsuk-button nhsuk-button--secondary"
-                    href={`/patient/${patient.id}/referrals/${referral.id}/documents`}
-                  >
-                    View document metadata
-                  </Link>
+                  <ReferralDocumentsSection patientId={patient.id} referral={referral} />
                 </li>
               ))}
             </ul>
@@ -88,7 +144,8 @@ export const getServerSideProps: GetServerSideProps<PageProps> = async ({ params
 
   return {
     props: {
-      patient: data.patient
+      patient: data.patient,
+      initialApolloState: serverClient.cache.extract()
     }
   }
 }
