@@ -3,6 +3,7 @@ import { startServerAndCreateNextHandler } from '@as-integrations/next'
 import type { NextApiRequest } from 'next'
 import { gql } from 'graphql-tag'
 import { getBaseUrl } from '../../lib/getBaseUrl'
+import responseCachePlugin from '@apollo/server-plugin-response-cache';
 
 const typeDefs = gql`
   type Document {
@@ -244,6 +245,10 @@ type Context = { baseUrl: string }
 const server = new ApolloServer<Context>({
   typeDefs,
   resolvers,
+  plugins: [responseCachePlugin({
+      sessionId: (requestContext) =>
+        requestContext.request.http?.headers.get('session-id') || null,
+    })]
 })
 
 export default startServerAndCreateNextHandler<NextApiRequest, Context>(server, {
