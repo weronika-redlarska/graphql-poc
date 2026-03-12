@@ -1,40 +1,30 @@
-import { ApolloClient, ApolloLink, HttpLink, InMemoryCache, NormalizedCacheObject } from '@apollo/client'
+import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject } from '@apollo/client'
 import { mergeDeep } from '@apollo/client/utilities'
 
 const debug = process.env.NODE_ENV === 'development'
+const SERVER_GRAPHQL_URI = 'http://localhost:3000/api/graphql'
 
 // Server-side singleton Apollo client that persists across SSR requests
 // within the same Node.js process. This allows cache sharing between pages
 // during server-side rendering, reducing redundant API calls.
-let serverApolloClient: ApolloClient<NormalizedCacheObject> | undefined
-
-export const getServerApolloClient = (baseUrl: string): ApolloClient<NormalizedCacheObject> => {
-  if (serverApolloClient) {
-    if (debug) {
-      console.debug('[Apollo SSR] Reusing existing server-side client')
+const serverApolloClient = new ApolloClient<NormalizedCacheObject>({
+  ssrMode: true,
+  link: new HttpLink({
+    uri: SERVER_GRAPHQL_URI,
+    useGETForQueries: true
+  }),
+  cache: new InMemoryCache(),
+  defaultOptions: {
+    query: {
+      fetchPolicy: 'cache-first'
     }
-    return serverApolloClient
   }
+})
 
+export const getServerApolloClient = (): ApolloClient<NormalizedCacheObject> => {
   if (debug) {
-    console.debug('[Apollo SSR] Creating new server-side client')
+    console.debug('[Apollo SSR] Reusing module-level server-side client')
   }
-
-  const uri = `${baseUrl}/api/graphql`
-
-  serverApolloClient = new ApolloClient({
-    ssrMode: true,
-    link: new HttpLink({
-      uri,
-      useGETForQueries: true
-    }),
-    cache: new InMemoryCache(),
-    defaultOptions: {
-      query: {
-        fetchPolicy: 'cache-first'
-      }
-    }
-  })
 
   return serverApolloClient
 }

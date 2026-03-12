@@ -1,10 +1,8 @@
 import Head from 'next/head'
 import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
-import { gql, useQuery } from '@apollo/client'
-import { initializeApollo } from '../lib/apolloClient'
+import { gql } from '@apollo/client'
 import { getServerApolloClient } from '../lib/serverApolloClient'
-import { getBaseUrl } from '../lib/getBaseUrl'
 
 const PATIENTS_QUERY = gql`
   query Patients {
@@ -20,8 +18,11 @@ type PatientSummary = {
   name: string
 }
 
-export default function Home() {
-  const { data, loading } = useQuery<{ patients: PatientSummary[] }>(PATIENTS_QUERY)
+type PageProps = Readonly<{
+  patients: PatientSummary[]
+}>
+
+export default function Home({ patients }: PageProps) {
 
   return (
     <>
@@ -38,9 +39,8 @@ export default function Home() {
         </header>
         <section className="nhsuk-u-margin-bottom-6">
           <h2 className="nhsuk-heading-m">Patient summaries (SSR)</h2>
-          {loading && <p className="nhsuk-body">Loading patient list…</p>}
           <ul className="nhsuk-list nhsuk-list--border">
-            {data?.patients?.map((patient) => (
+            {patients.map((patient) => (
               <li key={patient.id}>
                 <Link href={`/patient/${patient.id}`}>{patient.name}</Link>
               </li>
@@ -56,17 +56,16 @@ export default function Home() {
   )
 }
 
-export const getServerSideProps: GetServerSideProps = async ({ req }) => {
-  // Use persistent server-side Apollo client that shares cache across SSR requests
-  const serverClient = getServerApolloClient(getBaseUrl(req))
+export const getServerSideProps: GetServerSideProps<PageProps> = async () => {
+  const serverClient = getServerApolloClient()
 
-  await serverClient.query({
+  const { data } = await serverClient.query<{ patients: PatientSummary[] }>({
     query: PATIENTS_QUERY
   })
 
   return {
     props: {
-      initialApolloState: serverClient.cache.extract()
+      patients: data.patients
     }
   }
 }
