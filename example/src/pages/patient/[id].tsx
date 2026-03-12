@@ -34,11 +34,11 @@ function ReferralDocumentsSection({
   patientId,
   referral,
   onStateChange
-}: {
+}: Readonly<{
   patientId: string
   referral: ReferralSummary
-  onStateChange?: (state: DocumentsState) => void
-}) {
+  onStateChange?: (referralId: string, state: DocumentsState) => void
+}>) {
   const [showDocuments, setShowDocuments] = useState(false)
   const { data, loading, error } = useQuery<ReferralDocumentsData>(REFERRAL_DOCUMENTS_QUERY, {
     variables: { patientId, referralId: referral.id },
@@ -48,9 +48,9 @@ function ReferralDocumentsSection({
   // Notify parent of state changes for unified visualization
   useEffect(() => {
     if (onStateChange) {
-      onStateChange({ showDocuments, data, loading, error })
+      onStateChange(referral.id, { showDocuments, data, loading, error })
     }
-  }, [showDocuments, data, loading, error, onStateChange])
+  }, [showDocuments, data, loading, error, onStateChange, referral.id])
 
   const documentList = data?.referralDocuments ?? referral.documents
 
@@ -102,7 +102,7 @@ function ReferralDocumentsSection({
   )
 }
 
-export default function PatientDetailPage({ id }: PageProps) {
+export default function PatientDetailPage({ id }: Readonly<PageProps>) {
   const { data: coreData, complete: coreComplete } = useFragment<{ id: string; name: string }>({
     fragment: PATIENT_CORE_FRAGMENT,
     from: { __typename: 'Patient', id }
@@ -120,7 +120,18 @@ export default function PatientDetailPage({ id }: PageProps) {
   const [documentStates, setDocumentStates] = useState<Map<string, DocumentsState>>(new Map())
 
   const handleDocumentStateChange = useCallback((referralId: string, state: DocumentsState) => {
-    setDocumentStates(prev => {
+    setDocumentStates((prev) => {
+      const current = prev.get(referralId)
+
+      if (
+        current?.showDocuments === state.showDocuments &&
+        current?.data === state.data &&
+        current?.loading === state.loading &&
+        current?.error === state.error
+      ) {
+        return prev
+      }
+
       const next = new Map(prev)
       next.set(referralId, state)
       return next
@@ -129,10 +140,17 @@ export default function PatientDetailPage({ id }: PageProps) {
 
   // Build unified query tree visualization including all progressive loads
   const queryTree = useMemo(() => {
+    let patientStatus: QueryNode['status'] = 'pending'
+    if (loading) {
+      patientStatus = 'loading'
+    } else if (patient) {
+      patientStatus = 'loaded'
+    }
+
     const patientNode: QueryNode = {
       id: 'patient',
       label: `patient(id: "${id.slice(0, 8)}...")`,
-      status: loading ? 'loading' : patient ? 'loaded' : 'pending',
+      status: patientStatus,
       children: [
         {
           id: 'id',
@@ -182,10 +200,19 @@ export default function PatientDetailPage({ id }: PageProps) {
       if (state.showDocuments) {
         const referral = patient?.referrals.find(r => r.id === referralId)
         if (referral) {
+          let documentStatus: QueryNode['status'] = 'pending'
+          if (state.loading) {
+            documentStatus = 'loading'
+          } else if (state.error) {
+            documentStatus = 'error'
+          } else if (state.data) {
+            documentStatus = 'loaded'
+          }
+
           const documentNode: QueryNode = {
             id: `referralDocuments-${referralId}`,
             label: `referralDocuments(patientId: "${id.slice(0, 8)}...", referralId: "${referralId.slice(0, 8)}...")`,
-            status: state.loading ? 'loading' : state.error ? 'error' : state.data ? 'loaded' : 'pending',
+            status: documentStatus,
             children: state.data?.referralDocuments.map((doc) => ({
               id: `doc-${doc.id}`,
               label: `Document { title: "${doc.title}" }`,
@@ -261,7 +288,7 @@ export default function PatientDetailPage({ id }: PageProps) {
                           <ReferralDocumentsSection
                             patientId={patient.id}
                             referral={referral}
-                            onStateChange={(state) => handleDocumentStateChange(referral.id, state)}
+                            onStateChange={handleDocumentStateChange}
                           />
                         </li>
                       ))}
