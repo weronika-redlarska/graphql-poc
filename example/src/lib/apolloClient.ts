@@ -5,6 +5,16 @@ import { LoggingInMemoryCache } from './LoggingInMemoryCache'
 
 const debug = process.env.NODE_ENV === 'development'
 const APOLLO_CACHE_STORAGE_KEY = 'apollo-cache'
+const APOLLO_CACHE_UPDATED_EVENT = 'apollo-cache-updated'
+let persistedCacheSnapshot: NormalizedCacheObject | null = null
+
+const notifyPersistedCacheUpdated = () => {
+  if (globalThis.window === undefined) {
+    return
+  }
+
+  globalThis.window.dispatchEvent(new CustomEvent(APOLLO_CACHE_UPDATED_EVENT))
+}
 
 const restoreCacheFromStorage = (cache: InMemoryCache) => {
   if (globalThis.window === undefined) {
@@ -18,10 +28,14 @@ const restoreCacheFromStorage = (cache: InMemoryCache) => {
   }
 
   try {
-    cache.restore(JSON.parse(storedCache) as NormalizedCacheObject)
+    persistedCacheSnapshot = JSON.parse(storedCache) as NormalizedCacheObject
+    cache.restore(persistedCacheSnapshot)
+    notifyPersistedCacheUpdated()
   } catch (error) {
     console.warn('[Apollo Cache] Failed to restore persisted cache', error)
+    persistedCacheSnapshot = null
     globalThis.localStorage.removeItem(APOLLO_CACHE_STORAGE_KEY)
+    notifyPersistedCacheUpdated()
   }
 }
 
@@ -31,7 +45,9 @@ const persistCacheToStorage = (cache: InMemoryCache) => {
   }
 
   try {
-    globalThis.localStorage.setItem(APOLLO_CACHE_STORAGE_KEY, JSON.stringify(cache.extract()))
+    persistedCacheSnapshot = cache.extract()
+    globalThis.localStorage.setItem(APOLLO_CACHE_STORAGE_KEY, JSON.stringify(persistedCacheSnapshot))
+    notifyPersistedCacheUpdated()
   } catch (error) {
     console.warn('[Apollo Cache] Failed to persist cache', error)
   }
@@ -139,4 +155,20 @@ export const initializeApollo = (
 
 export const useApollo = (initialState?: NormalizedCacheObject | null) => {
   return useMemo(() => initializeApollo(initialState ?? null), [initialState])
+}
+
+export const getPersistedCacheSnapshot = (): NormalizedCacheObject | null => persistedCacheSnapshot
+
+export const subscribeToPersistedCacheUpdates = (
+  onChange: () => void
+): (() => void) => {
+  if (globalThis.window === undefined) {
+    return () => undefined
+  }
+
+  globalThis.window.addEventListener(APOLLO_CACHE_UPDATED_EVENT, onChange)
+
+  return () => {
+    globalThis.window.removeEventListener(APOLLO_CACHE_UPDATED_EVENT, onChange)
+  }
 }

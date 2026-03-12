@@ -1,9 +1,10 @@
 import Head from 'next/head'
 import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
-import { useQuery, useFragment, gql } from '@apollo/client'
+import { useQuery, useFragment, gql, useApolloClient, type NormalizedCacheObject } from '@apollo/client'
 import { useMemo, useState, useCallback, useEffect } from 'react'
 import { getServerApolloClient } from '../../lib/serverApolloClient'
+import { getPersistedCacheSnapshot, subscribeToPersistedCacheUpdates } from '../../lib/apolloClient'
 import { PATIENT_DETAIL_QUERY, PatientDetail, REFERRAL_DOCUMENTS_QUERY, DocumentMeta, ReferralSummary } from '../../lib/patientQueries'
 import { QueryVisualizer, QueryNode } from '../../components/QueryVisualizer'
 
@@ -29,6 +30,37 @@ type DocumentsState = {
   loading: boolean
   error: any
 }
+
+const getPersistedEntity = (
+  persistedCache: NormalizedCacheObject | null,
+  cacheId?: string
+): Record<string, unknown> | undefined => {
+  if (!persistedCache || !cacheId) {
+    return undefined
+  }
+
+  const entity = persistedCache[cacheId]
+  return entity && typeof entity === 'object' ? (entity as Record<string, unknown>) : undefined
+}
+
+const hasPersistedField = (
+  entity: Record<string, unknown> | undefined,
+  fieldName: string
+): boolean => Object.hasOwn(entity ?? {}, fieldName)
+
+const hasAllPersistedFields = (
+  entity: Record<string, unknown> | undefined,
+  fieldNames: string[]
+): boolean => fieldNames.every((fieldName) => hasPersistedField(entity, fieldName))
+
+const mapQueryTree = (
+  tree: QueryNode[],
+  transformStatus: (status: QueryNode['status']) => QueryNode['status']
+): QueryNode[] => tree.map((node) => ({
+  ...node,
+  status: transformStatus(node.status),
+  children: node.children ? mapQueryTree(node.children, transformStatus) : undefined
+}))
 
 function ReferralDocumentsSection({
   patientId,
@@ -103,6 +135,7 @@ function ReferralDocumentsSection({
 }
 
 export default function PatientDetailPage({ id }: Readonly<PageProps>) {
+  const apolloClient = useApolloClient()
   const { data: coreData, complete: coreComplete } = useFragment<{ id: string; name: string }>({
     fragment: PATIENT_CORE_FRAGMENT,
     from: { __typename: 'Patient', id }
@@ -115,6 +148,17 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
 
   const patient = data?.patient
   const patientName = patient?.name ?? (coreComplete ? coreData.name : undefined)
+  const [persistedCache, setPersistedCache] = useState<NormalizedCacheObject | null>(null)
+
+  useEffect(() => {
+    const syncPersistedCache = () => {
+      setPersistedCache(getPersistedCacheSnapshot())
+    }
+
+    syncPersistedCache()
+
+    return subscribeToPersistedCacheUpdates(syncPersistedCache)
+  }, [])
 
   // Track document states for unified visualization
   const [documentStates, setDocumentStates] = useState<Map<string, DocumentsState>>(new Map())
@@ -140,14 +184,47 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
 
   // Render the full patient graph and progressively highlight fields as more of it is fetched.
   const queryTree = useMemo(() => {
+    const patientEntity = getPersistedEntity(
+      persistedCache,
+      apolloClient.cache.identify({ __typename: 'Patient', id }) ?? undefined
+    )
+
+    const getFieldStatus = (
+      entity: Record<string, unknown> | undefined,
+      fieldName: string,
+      fallbackLoaded: boolean
+    ): QueryNode['status'] => {
+      if (hasPersistedField(entity, fieldName)) {
+        return 'cached'
+      }
+
+      return fallbackLoaded ? 'loaded' : 'pending'
+    }
+
     let patientStatus: QueryNode['status'] = 'pending'
     if (loading) {
       patientStatus = 'loading'
     } else if (patient) {
-      patientStatus = 'loaded'
+      const hasPersistedPatientSelection = hasAllPersistedFields(patientEntity, [
+        'id',
+        'name',
+        'nhsNumber',
+        'dateOfBirth',
+        'gpPractice',
+        'referrals'
+      ])
+
+      patientStatus = hasPersistedPatientSelection ? 'cached' : 'loaded'
     }
 
-    const getDocumentCollectionStatus = (documentState?: DocumentsState): QueryNode['status'] => {
+    const getDocumentCollectionStatus = (
+      documentState: DocumentsState | undefined,
+      referralEntity: Record<string, unknown> | undefined
+    ): QueryNode['status'] => {
+      if (hasPersistedField(referralEntity, 'documents')) {
+        return 'cached'
+      }
+
       if (documentState?.showDocuments !== true) {
         return 'loaded'
       }
@@ -163,7 +240,15 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
       return 'loaded'
     }
 
-    const getDocumentMetadataStatus = (documentState?: DocumentsState): QueryNode['status'] => {
+    const getDocumentMetadataStatus = (
+      documentState: DocumentsState | undefined,
+      documentEntity: Record<string, unknown> | undefined,
+      fieldName: string
+    ): QueryNode['status'] => {
+      if (hasPersistedField(documentEntity, fieldName)) {
+        return 'cached'
+      }
+
       if (documentState?.showDocuments !== true) {
         return 'pending'
       }
@@ -207,34 +292,38 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
         {
           id: 'id',
           label: 'id: ID!',
-          status: coreComplete || patient ? 'cached' : 'pending'
+          status: getFieldStatus(patientEntity, 'id', coreComplete || !!patient)
         },
         {
           id: 'name',
           label: `name: "${patientName || '...'}"`,
-          status: coreComplete || patient ? 'cached' : 'pending'
+          status: getFieldStatus(patientEntity, 'name', coreComplete || !!patient)
         },
         {
           id: 'nhsNumber',
           label: `nhsNumber: "${patient?.nhsNumber || '...'}"`,
-          status: patient ? 'loaded' : 'pending'
+          status: getFieldStatus(patientEntity, 'nhsNumber', !!patient)
         },
         {
           id: 'dateOfBirth',
           label: `dateOfBirth: "${patient?.dateOfBirth || '...'}"`,
-          status: patient ? 'loaded' : 'pending'
+          status: getFieldStatus(patientEntity, 'dateOfBirth', !!patient)
         },
         {
           id: 'gpPractice',
           label: `gpPractice: "${patient?.gpPractice || '...'}"`,
-          status: patient ? 'loaded' : 'pending'
+          status: getFieldStatus(patientEntity, 'gpPractice', !!patient)
         },
         {
           id: 'referrals',
           label: `referrals: [Referral!]! (${patient?.referrals?.length || 0} items)`,
-          status: patient ? 'loaded' : 'pending',
+          status: getFieldStatus(patientEntity, 'referrals', !!patient),
           children: patient?.referrals?.map((referral) => {
             const documentState = documentStates.get(referral.id)
+            const referralEntity = getPersistedEntity(
+              persistedCache,
+              apolloClient.cache.identify({ __typename: 'Referral', id: referral.id }) ?? undefined
+            )
             const detailDocuments = documentState?.data?.referralDocuments ?? []
             const detailDocumentsById = new Map(detailDocuments.map((document) => [document.id, document]))
             const summaryDocumentIds = new Set(referral.documents.map((document) => document.id))
@@ -242,52 +331,78 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
               ...referral.documents.map((document) => detailDocumentsById.get(document.id) ?? document),
               ...detailDocuments.filter((document) => !summaryDocumentIds.has(document.id))
             ]
-            const documentsStatus = getDocumentCollectionStatus(documentState)
+            const documentsStatus = getDocumentCollectionStatus(documentState, referralEntity)
+            const referralStatus: QueryNode['status'] = hasAllPersistedFields(referralEntity, [
+              'id',
+              'title',
+              'status',
+              'receivedAt',
+              'documentCount',
+              'documents'
+            ])
+              ? 'cached'
+              : 'loaded'
 
             return {
               id: `referral-${referral.id}`,
               label: `Referral { title: "${referral.title}" }`,
-              status: 'loaded' as const,
+              status: referralStatus,
               children: [
-                { id: `${referral.id}-id`, label: `id: "${referral.id}"`, status: 'loaded' as const },
-                { id: `${referral.id}-title`, label: `title: "${referral.title}"`, status: 'loaded' as const },
-                { id: `${referral.id}-status`, label: `status: "${referral.status}"`, status: 'loaded' as const },
-                { id: `${referral.id}-receivedAt`, label: `receivedAt: "${referral.receivedAt}"`, status: 'loaded' as const },
+                { id: `${referral.id}-id`, label: `id: "${referral.id}"`, status: getFieldStatus(referralEntity, 'id', true) },
+                { id: `${referral.id}-title`, label: `title: "${referral.title}"`, status: getFieldStatus(referralEntity, 'title', true) },
+                { id: `${referral.id}-status`, label: `status: "${referral.status}"`, status: getFieldStatus(referralEntity, 'status', true) },
+                { id: `${referral.id}-receivedAt`, label: `receivedAt: "${referral.receivedAt}"`, status: getFieldStatus(referralEntity, 'receivedAt', true) },
                 {
                   id: `${referral.id}-docs`,
                   label: `documents: [Document!]! (${referral.documentCount} items)`,
                   status: documentsStatus,
                   children: mergedDocuments.map((document) => {
+                    const documentEntity = getPersistedEntity(
+                      persistedCache,
+                      apolloClient.cache.identify({ __typename: 'Document', id: document.id }) ?? undefined
+                    )
                     const detailedDocument = detailDocumentsById.get(document.id)
-                    const metadataStatus = getDocumentMetadataStatus(documentState)
-                    const documentStatus = documentState?.showDocuments === true ? documentsStatus : 'loaded'
+                    const isDocumentSummaryCached = hasAllPersistedFields(documentEntity, ['id', 'title'])
+                    const isDocumentMetadataCached = hasAllPersistedFields(documentEntity, [
+                      'type',
+                      'sizeKb',
+                      'createdAt',
+                      'uploadedBy'
+                    ])
+
+                    let documentStatus: QueryNode['status'] = 'loaded'
+                    if (isDocumentSummaryCached && (!documentState?.showDocuments || isDocumentMetadataCached)) {
+                      documentStatus = 'cached'
+                    } else if (documentState?.showDocuments === true) {
+                      documentStatus = documentsStatus
+                    }
 
                     return {
                       id: `${referral.id}-document-${document.id}`,
                       label: `Document { id: "${document.id}" }`,
                       status: documentStatus,
                       children: [
-                        { id: `${document.id}-id`, label: `id: "${document.id}"`, status: 'loaded' as const },
-                        { id: `${document.id}-title`, label: `title: "${document.title}"`, status: 'loaded' as const },
+                        { id: `${document.id}-id`, label: `id: "${document.id}"`, status: getFieldStatus(documentEntity, 'id', true) },
+                        { id: `${document.id}-title`, label: `title: "${document.title}"`, status: getFieldStatus(documentEntity, 'title', true) },
                         {
                           id: `${document.id}-type`,
                           label: getMetadataLabel('type', 'String', detailedDocument?.type ?? (detailedDocument ? 'Unknown' : undefined)),
-                          status: metadataStatus
+                          status: getDocumentMetadataStatus(documentState, documentEntity, 'type')
                         },
                         {
                           id: `${document.id}-size`,
                           label: getMetadataLabel('sizeKb', 'Int', detailedDocument?.sizeKb),
-                          status: metadataStatus
+                          status: getDocumentMetadataStatus(documentState, documentEntity, 'sizeKb')
                         },
                         {
                           id: `${document.id}-created`,
                           label: getMetadataLabel('createdAt', 'String', detailedDocument?.createdAt ?? (detailedDocument ? 'Unknown' : undefined)),
-                          status: metadataStatus
+                          status: getDocumentMetadataStatus(documentState, documentEntity, 'createdAt')
                         },
                         {
                           id: `${document.id}-uploader`,
                           label: getMetadataLabel('uploadedBy', 'String', detailedDocument?.uploadedBy ?? (detailedDocument ? 'Unknown' : undefined)),
-                          status: metadataStatus
+                          status: getDocumentMetadataStatus(documentState, documentEntity, 'uploadedBy')
                         }
                       ]
                     }
@@ -301,7 +416,23 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
     }
 
     return [patientNode]
-  }, [patient, loading, coreComplete, patientName, id, documentStates])
+  }, [apolloClient.cache, coreComplete, documentStates, id, loading, patient, patientName, persistedCache])
+
+  const hasPersistedPatient = hasPersistedField(
+    getPersistedEntity(
+      persistedCache,
+      apolloClient.cache.identify({ __typename: 'Patient', id }) ?? undefined
+    ),
+    'id'
+  )
+  const displayTree = useMemo(
+    () => mapQueryTree(queryTree, (status) => (status === 'cached' ? 'loaded' : status)),
+    [queryTree]
+  )
+  const cacheTree = useMemo(
+    () => mapQueryTree(queryTree, (status) => (status === 'cached' ? 'cached' : 'pending')),
+    [queryTree]
+  )
 
   return (
     <>
@@ -368,20 +499,49 @@ export default function PatientDetailPage({ id }: Readonly<PageProps>) {
             )}
           </div>
 
-          <div>
+          <div className="visualizer-rail">
             <QueryVisualizer
               queryName="Patient Graph"
-              tree={queryTree}
+              tree={displayTree}
               isLoading={loading || Array.from(documentStates.values()).some(state => state.loading)}
-              fromCache={coreComplete && !loading}
+              fromCache={false}
+              bodyMaxHeight="28vh"
+            />
+            <QueryVisualizer
+              queryName="Persisted Cache"
+              tree={cacheTree}
+              isLoading={false}
+              fromCache={hasPersistedPatient}
+              bodyMaxHeight="28vh"
             />
           </div>
         </div>
 
         <style jsx>{`
+          .visualizer-rail {
+            position: fixed;
+            top: 20px;
+            right: 24px;
+            width: min(420px, calc(100vw - 48px));
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-height: calc(100vh - 40px);
+            z-index: 10;
+          }
+
           @media (max-width: 1280px) {
             div[style*="display: grid"] {
               grid-template-columns: 1fr !important;
+            }
+
+            .visualizer-rail {
+              position: static;
+              top: auto;
+              right: auto;
+              width: 100%;
+              max-height: none;
+              margin-top: 24px;
             }
           }
         `}</style>

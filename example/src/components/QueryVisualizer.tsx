@@ -14,9 +14,16 @@ interface QueryVisualizerProps {
   tree: QueryNode[]
   isLoading: boolean
   fromCache?: boolean
+  bodyMaxHeight?: string
 }
 
-export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Readonly<QueryVisualizerProps>) {
+export function QueryVisualizer({
+  queryName,
+  tree,
+  isLoading,
+  fromCache,
+  bodyMaxHeight = 'calc(100vh - 180px)'
+}: Readonly<QueryVisualizerProps>) {
   const [expanded, setExpanded] = useState(true)
 
   const getStatusColor = (status: QueryNodeStatus): string => {
@@ -135,6 +142,7 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Reado
 
   return (
     <div
+      className="query-visualizer"
       style={{
         border: '2px solid #005eb8',
         borderRadius: '8px',
@@ -142,8 +150,7 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Reado
         backgroundColor: 'white',
         boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
         height: 'fit-content',
-        position: 'sticky',
-        top: '20px'
+        width: '100%'
       }}
     >
       <button
@@ -200,7 +207,7 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Reado
           style={{
             backgroundColor: '#fafafa',
             padding: '16px',
-            maxHeight: '70vh',
+            maxHeight: bodyMaxHeight,
             overflowY: 'auto'
           }}
         >
@@ -236,6 +243,11 @@ export function QueryVisualizer({ queryName, tree, isLoading, fromCache }: Reado
         </div>
       )}
       <style jsx>{`
+        .query-visualizer {
+          display: flex;
+          flex-direction: column;
+        }
+
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }

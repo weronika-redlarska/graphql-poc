@@ -1,11 +1,11 @@
 import Head from 'next/head'
 import Link from 'next/link'
 import type { GetServerSideProps } from 'next'
-import { gql, useQuery } from '@apollo/client'
+import { gql, useApolloClient, useQuery, type NormalizedCacheObject } from '@apollo/client'
 import { getServerApolloClient } from '../lib/serverApolloClient'
 import { QueryVisualizer, QueryNode } from '../components/QueryVisualizer'
-import { useMemo } from 'react'
-import { initializeApollo } from '../lib/apolloClient'
+import { useEffect, useMemo, useState } from 'react'
+import { getPersistedCacheSnapshot, subscribeToPersistedCacheUpdates } from '../lib/apolloClient'
 
 const PATIENTS_QUERY = gql`
   query Patients {
@@ -21,23 +21,115 @@ type PatientSummary = {
   name: string
 }
 
+const getPersistedEntity = (
+  persistedCache: NormalizedCacheObject | null,
+  cacheId?: string
+): Record<string, unknown> | undefined => {
+  if (!persistedCache || !cacheId) {
+    return undefined
+  }
+
+  const entity = persistedCache[cacheId]
+  return entity && typeof entity === 'object' ? (entity as Record<string, unknown>) : undefined
+}
+
+const mapQueryTree = (
+  tree: QueryNode[],
+  transformStatus: (status: QueryNode['status']) => QueryNode['status']
+): QueryNode[] => tree.map((node) => ({
+  ...node,
+  status: transformStatus(node.status),
+  children: node.children ? mapQueryTree(node.children, transformStatus) : undefined
+}))
+
 export default function Home() {
+  const apolloClient = useApolloClient()
   const { data, loading } = useQuery<{ patients: PatientSummary[] }>(PATIENTS_QUERY)
+  const [persistedCache, setPersistedCache] = useState<NormalizedCacheObject | null>(null)
+
+  useEffect(() => {
+    const syncPersistedCache = () => {
+      setPersistedCache(getPersistedCacheSnapshot())
+    }
+
+    syncPersistedCache()
+
+    return subscribeToPersistedCacheUpdates(syncPersistedCache)
+  }, [])
 
   const queryTree = useMemo(() => {
+    let patientsStatus: QueryNode['status'] = 'pending'
+    if (loading) {
+      patientsStatus = 'loading'
+    } else if (data) {
+      patientsStatus = 'loaded'
+    }
+
     const patientsNode: QueryNode = {
       id: 'patients',
       label: 'patients: [Patient!]!',
-      status: loading ? 'loading' : data ? 'loaded' : 'pending',
-      children: data?.patients?.slice(0, 3).map((patient) => ({
-        id: `patient-${patient.id}`,
-        label: `Patient { id: "${patient.id.slice(0, 8)}...", name: "${patient.name}" }`,
-        status: 'loaded' as const,
-        children: [
-          { id: `${patient.id}-id`, label: 'id: ID!', status: 'loaded' as const },
-          { id: `${patient.id}-name`, label: 'name: String!', status: 'loaded' as const }
-        ]
-      }))
+      status: patientsStatus,
+      children: data?.patients?.slice(0, 3).map((patient) => {
+        const patientEntity = getPersistedEntity(
+          persistedCache,
+          apolloClient.cache.identify({ __typename: 'Patient', id: patient.id }) ?? undefined
+        )
+        const patientNameStatus: QueryNode['status'] = Object.hasOwn(patientEntity ?? {}, 'name')
+          ? 'cached'
+          : 'loaded'
+
+        return {
+          id: `patient-${patient.id}`,
+          label: 'Patient',
+          status: 'pending' as const,
+          children: [
+            { id: `${patient.id}-id`, label: 'id: ID!', status: 'pending' as const },
+            { id: `${patient.id}-name`, label: `name: "${patient.name}"`, status: patientNameStatus },
+            { id: `${patient.id}-nhsNumber`, label: 'nhsNumber: String', status: 'pending' as const },
+            { id: `${patient.id}-dateOfBirth`, label: 'dateOfBirth: String', status: 'pending' as const },
+            { id: `${patient.id}-gpPractice`, label: 'gpPractice: String', status: 'pending' as const },
+            {
+              id: `${patient.id}-referrals`,
+              label: 'referrals: [Referral!]!',
+              status: 'pending' as const,
+              children: [
+                {
+                  id: `${patient.id}-referral-shape`,
+                  label: 'Referral',
+                  status: 'pending' as const,
+                  children: [
+                    { id: `${patient.id}-referral-id`, label: 'id: ID!', status: 'pending' as const },
+                    { id: `${patient.id}-referral-title`, label: 'title: String!', status: 'pending' as const },
+                    { id: `${patient.id}-referral-status`, label: 'status: String!', status: 'pending' as const },
+                    { id: `${patient.id}-referral-receivedAt`, label: 'receivedAt: String!', status: 'pending' as const },
+                    { id: `${patient.id}-referral-documentCount`, label: 'documentCount: Int!', status: 'pending' as const },
+                    {
+                      id: `${patient.id}-referral-documents`,
+                      label: 'documents: [Document!]!',
+                      status: 'pending' as const,
+                      children: [
+                        {
+                          id: `${patient.id}-document-shape`,
+                          label: 'Document',
+                          status: 'pending' as const,
+                          children: [
+                            { id: `${patient.id}-document-id`, label: 'id: ID!', status: 'pending' as const },
+                            { id: `${patient.id}-document-title`, label: 'title: String!', status: 'pending' as const },
+                            { id: `${patient.id}-document-type`, label: 'type: String', status: 'pending' as const },
+                            { id: `${patient.id}-document-sizeKb`, label: 'sizeKb: Int', status: 'pending' as const },
+                            { id: `${patient.id}-document-createdAt`, label: 'createdAt: String', status: 'pending' as const },
+                            { id: `${patient.id}-document-uploadedBy`, label: 'uploadedBy: String', status: 'pending' as const }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
     }
 
     if (data?.patients && data.patients.length > 3) {
@@ -49,7 +141,18 @@ export default function Home() {
     }
 
     return [patientsNode]
-  }, [data, loading])
+  }, [apolloClient.cache, data, loading, persistedCache])
+
+  const persistedRootQuery = getPersistedEntity(persistedCache, 'ROOT_QUERY')
+  const hasPersistedPatients = Object.hasOwn(persistedRootQuery ?? {}, 'patients')
+  const displayTree = useMemo(
+    () => mapQueryTree(queryTree, (status) => (status === 'cached' ? 'loaded' : status)),
+    [queryTree]
+  )
+  const cacheTree = useMemo(
+    () => mapQueryTree(queryTree, (status) => (status === 'cached' ? 'cached' : 'pending')),
+    [queryTree]
+  )
 
   return (
     <>
@@ -84,20 +187,49 @@ export default function Home() {
             </section>
           </div>
 
-          <div>
+          <div className="visualizer-rail">
             <QueryVisualizer
               queryName="Patients"
-              tree={queryTree}
+              tree={displayTree}
               isLoading={loading}
-              fromCache={!loading && !!data}
+              fromCache={false}
+              bodyMaxHeight="28vh"
+            />
+            <QueryVisualizer
+              queryName="Persisted Cache"
+              tree={cacheTree}
+              isLoading={false}
+              fromCache={hasPersistedPatients}
+              bodyMaxHeight="28vh"
             />
           </div>
         </div>
 
         <style jsx>{`
+          .visualizer-rail {
+            position: fixed;
+            top: 20px;
+            right: 24px;
+            width: min(420px, calc(100vw - 48px));
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-height: calc(100vh - 40px);
+            z-index: 10;
+          }
+
           @media (max-width: 1024px) {
             div[style*="display: grid"] {
               grid-template-columns: 1fr !important;
+            }
+
+            .visualizer-rail {
+              position: static;
+              top: auto;
+              right: auto;
+              width: 100%;
+              max-height: none;
+              margin-top: 24px;
             }
           }
         `}</style>
